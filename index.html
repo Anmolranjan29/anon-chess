@@ -1,0 +1,321 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Anonymous Live Chess</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/chessboard-js/1.0.0/chessboard-1.0.0.min.css">
+    <script src="https://code.jquery.com/jquery-3.6.0.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/chess.js/0.10.3/chess.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/chessboard-js/1.0.0/chessboard-1.0.0.min.js"></script>
+    <script src="/socket.io/socket.io.js"></script>
+    <style>
+        body { 
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; 
+            display: flex; flex-direction: column; align-items: center; color: #fff; margin: 0; padding: 40px 20px; min-height: 100vh;
+            background-color: #1a1a1a;
+            background-image: repeating-linear-gradient(45deg, #1e1e1e 25%, transparent 25%, transparent 75%, #1e1e1e 75%, #1e1e1e), repeating-linear-gradient(45deg, #1e1e1e 25%, #151515 25%, #151515 75%, #1e1e1e 75%, #1e1e1e);
+            background-position: 0 0, 20px 20px; background-size: 40px 40px;
+        }
+        .app-container {
+            background: rgba(35, 35, 35, 0.95); padding: 30px; border-radius: 12px; box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+            border: 1px solid #333; text-align: center; max-width: 500px; width: 100%;
+        }
+        h2 { margin-top: 0; font-size: 28px; color: #fff; text-shadow: 0 2px 4px rgba(0,0,0,0.5); }
+        #setup { display: flex; flex-direction: column; gap: 15px; }
+        #board { width: 400px; margin: 20px auto; box-shadow: 0 8px 20px rgba(0,0,0,0.6); border-radius: 4px; }
+        
+        #status { font-weight: bold; margin-top: 15px; color: #4CAF50; font-size: 1.3em; background: #111; padding: 12px; border-radius: 6px; letter-spacing: 0.5px; }
+        
+        .btn { padding: 14px; font-size: 16px; cursor: pointer; background: #4CAF50; color: white; border: none; border-radius: 6px; font-weight: bold; transition: all 0.2s ease; box-shadow: 0 4px 6px rgba(0,0,0,0.2); }
+        .btn:hover { background: #45a049; transform: translateY(-2px); box-shadow: 0 6px 12px rgba(0,0,0,0.3); }
+        .btn:active { transform: translateY(0); }
+        .btn-bot { background: #008CBA; } .btn-bot:hover { background: #007B9A; }
+        .btn-random { background: #9c27b0; } .btn-random:hover { background: #7b1fa2; }
+        .btn-cancel { background: #f44336; margin-bottom: 15px; } .btn-cancel:hover { background: #da190b; }
+        
+        select { padding: 12px; border-radius: 6px; border: 1px solid #555; font-size: 15px; background: #222; color: white; cursor: pointer; }
+        #gameArea { display: none; }
+        #gameLink { background: #222; padding: 12px; border-radius: 6px; word-break: break-all; font-size: 1.1em; font-weight: bold; color: #fff; border: 1px dashed #555; }
+        .highlight-square { box-shadow: inset 0 0 0 4px #4CAF50 !important; background-color: rgba(76, 175, 80, 0.3) !important; }
+    </style>
+</head>
+<body>
+
+    <div class="app-container">
+        <h2>♟️ Anonymous Live Chess</h2>
+        
+        <div id="setup">
+            <h3 style="margin-bottom: 5px; color: #ddd;">Choose Game Mode</h3>
+            
+            <button class="btn btn-random" onclick="findRandomGame()">🌍 Play Online (Random Match)</button>
+            <div style="margin: 5px 0; border-bottom: 1px solid #444;"></div>
+            
+            <button class="btn" onclick="createNewGame()">👥 Play vs Friend (Invite Link)</button>
+            
+            <div style="margin: 5px 0; border-bottom: 1px solid #444;"></div>
+            
+            <label for="eloSelect" style="color: #bbb;">Select Bot Difficulty:</label>
+            <select id="eloSelect">
+                <option value="100">100 Elo (Total Beginner)</option>
+                <option value="500">500 Elo (Casual)</option>
+                <option value="1000">1000 Elo (Intermediate)</option>
+                <option value="1500">1500 Elo (Advanced)</option>
+            </select>
+            <button class="btn btn-bot" onclick="startBotGame()">🤖 Play vs Computer</button>
+        </div>
+        
+        <div id="gameArea">
+            <button class="btn btn-cancel" onclick="goHome()">🏠 Cancel & Go Back</button>
+            <p id="gameLink"></p>
+            <div id="board"></div>
+            <div id="status">Setting up...</div>
+        </div>
+    </div>
+
+    <script>
+        const socket = io();
+        let board = null;
+        let game = new Chess();
+        let gameId = window.location.hash.substring(1);
+        let playerColor = 'w'; 
+        let isBotGame = false;
+        let botElo = 100;
+        let selectedSquare = null;
+        let frontendCountdown = null; 
+
+        if (gameId) {
+            isBotGame = false;
+            document.getElementById('setup').style.display = 'none';
+            document.getElementById('gameArea').style.display = 'block';
+            document.getElementById('gameLink').innerText = `Share this link with a friend: ${window.location.href}`;
+            document.getElementById('status').innerText = "Waiting for opponent to join...";
+            socket.emit('joinGame', gameId);
+        }
+
+        function createNewGame() {
+            const randomId = Math.random().toString(36).substring(2, 9);
+            window.location.hash = randomId;
+            window.location.reload();
+        }
+
+        function goHome() {
+            window.history.replaceState(null, null, ' ');
+            window.location.reload();
+        }
+
+        function formatTime(seconds) {
+            let secs = seconds < 10 ? "0" + seconds : seconds;
+            return "00:" + secs;
+        }
+
+        // ⏱️ UPDATED: Count-up Timer Logic
+        function findRandomGame() {
+            isBotGame = false;
+            document.getElementById('setup').style.display = 'none';
+            document.getElementById('gameArea').style.display = 'block';
+            document.getElementById('gameLink').innerText = "Searching global queue...";
+            
+            // Start at 1 second
+            let secondsElapsed = 1; 
+            document.getElementById('status').innerText = `🔍 Searching... ⏱️ ${formatTime(secondsElapsed)}`;
+            
+            if (frontendCountdown) clearInterval(frontendCountdown);
+            
+            // Count upwards every 1 second
+            frontendCountdown = setInterval(() => {
+                secondsElapsed++;
+                document.getElementById('status').innerText = `🔍 Searching... ⏱️ ${formatTime(secondsElapsed)}`;
+                // No need to manually stop it here—the server will send the 'botMatchFallback' 
+                // event exactly at 40 seconds, which will stop the clock and start the game!
+            }, 1000);
+
+            socket.emit('findRandomMatch');
+        }
+
+        socket.on('randomMatchFound', (data) => {
+            clearInterval(frontendCountdown); 
+            
+            gameId = data.gameId; 
+            playerColor = data.color;
+            window.location.hash = gameId; 
+
+            document.getElementById('gameLink').innerText = `Matched with a live player! Good luck!`;
+            
+            board = Chessboard('board', {
+                draggable: true,
+                position: 'start',
+                orientation: playerColor === 'w' ? 'white' : 'black',
+                pieceTheme: 'https://chessboardjs.com/img/chesspieces/wikipedia/{piece}.png',
+                onDragStart: onDragStart,
+                onDrop: onDrop
+            });
+        });
+
+        socket.on('botMatchFallback', (data) => {
+            clearInterval(frontendCountdown); // Server says 40s is up, kill the clock!
+            
+            isBotGame = true;
+            botElo = data.elo;
+            playerColor = Math.random() < 0.5 ? 'w' : 'b'; 
+            
+            window.history.replaceState(null, null, ' '); 
+
+            document.getElementById('gameLink').innerText = `Matched! Playing vs ${data.name} (${botElo} Elo)`;
+            
+            board = Chessboard('board', {
+                draggable: true,
+                position: 'start',
+                orientation: playerColor === 'w' ? 'white' : 'black',
+                pieceTheme: 'https://chessboardjs.com/img/chesspieces/wikipedia/{piece}.png',
+                onDragStart: onDragStart,
+                onDrop: onDrop
+            });
+
+            updateStatus();
+            if (playerColor === 'b') { setTimeout(makeBotMove, 500); }
+        });
+
+        function startBotGame() {
+            isBotGame = true;
+            botElo = parseInt(document.getElementById('eloSelect').value);
+            playerColor = Math.random() < 0.5 ? 'w' : 'b'; 
+            
+            document.getElementById('setup').style.display = 'none';
+            document.getElementById('gameArea').style.display = 'block';
+            document.getElementById('gameLink').innerText = `Playing Offline vs ${botElo} Elo Bot`;
+
+            board = Chessboard('board', {
+                draggable: true,
+                position: 'start',
+                orientation: playerColor === 'w' ? 'white' : 'black',
+                pieceTheme: 'https://chessboardjs.com/img/chesspieces/wikipedia/{piece}.png',
+                onDragStart: onDragStart,
+                onDrop: onDrop
+            });
+            updateStatus();
+            if (playerColor === 'b') { setTimeout(makeBotMove, 500); }
+        }
+
+        socket.on('playerColor', (color) => {
+            playerColor = color;
+            board = Chessboard('board', {
+                draggable: true, position: 'start', orientation: color === 'w' ? 'white' : 'black',
+                pieceTheme: 'https://chessboardjs.com/img/chesspieces/wikipedia/{piece}.png',
+                onDragStart: onDragStart, onDrop: onDrop
+            });
+        });
+
+        socket.on('startGame', () => { document.getElementById('status').innerText = "⚔️ Game started! White's turn."; });
+
+        socket.on('moveMade', (move) => {
+            game.move(move);
+            board.position(game.fen());
+            updateStatus();
+        });
+
+        socket.on('playerLeft', () => { document.getElementById('status').innerText = "🚪 Opponent disconnected. You win!"; });
+
+        function removeHighlights() { $('#board [data-square]').removeClass('highlight-square'); }
+        function addHighlight(square) { $('#board .square-' + square).addClass('highlight-square'); }
+
+        $('#board').on('click', '[data-square]', function() {
+            if (game.game_over()) return;
+            if (game.turn() !== playerColor) return; 
+
+            let square = $(this).attr('data-square');
+            let piece = game.get(square);
+
+            if (selectedSquare === null) {
+                if (piece && piece.color === playerColor) { selectedSquare = square; addHighlight(square); }
+                return;
+            }
+            if (selectedSquare === square) { selectedSquare = null; removeHighlights(); return; }
+            if (piece && piece.color === playerColor) { selectedSquare = square; removeHighlights(); addHighlight(square); return; }
+
+            let move = game.move({ from: selectedSquare, to: square, promotion: 'q' });
+            if (move === null) { selectedSquare = null; removeHighlights(); return; }
+
+            removeHighlights();
+            selectedSquare = null;
+            board.position(game.fen());
+
+            if (!isBotGame) { socket.emit('makeMove', { gameId, move: { from: move.from, to: move.to, promotion: 'q' } }); }
+            updateStatus();
+            if (isBotGame && !game.game_over()) { setTimeout(makeBotMove, 600); }
+        });
+
+        function onDragStart(source, piece, position, orientation) {
+            if (game.game_over()) return false;
+            if ((playerColor === 'w' && piece.search(/^b/) !== -1) || (playerColor === 'b' && piece.search(/^w/) !== -1) || (game.turn() !== playerColor)) { return false; }
+        }
+
+        function onDrop(source, target) {
+            removeHighlights();
+            selectedSquare = null;
+            let move = game.move({ from: source, to: target, promotion: 'q' });
+            if (move === null) return 'snapback';
+            if (!isBotGame) { socket.emit('makeMove', { gameId, move: { from: source, to: target, promotion: 'q' } }); }
+            updateStatus();
+            if (isBotGame && !game.game_over()) { setTimeout(makeBotMove, 600); }
+        }
+
+        function makeBotMove() {
+            let possibleMoves = game.moves({ verbose: true });
+            if (possibleMoves.length === 0) return;
+            let selectedMove = null;
+
+            if (botElo <= 400) { selectedMove = possibleMoves[Math.floor(Math.random() * possibleMoves.length)]; } 
+            else if (botElo <= 900) {
+                let captures = possibleMoves.filter(m => m.captured);
+                if (captures.length > 0) {
+                    const values = { p: 1, n: 3, b: 3, r: 5, q: 9 };
+                    captures.sort((a, b) => (values[b.captured] || 0) - (values[a.captured] || 0));
+                    selectedMove = captures[0];
+                } else { selectedMove = possibleMoves[Math.floor(Math.random() * possibleMoves.length)]; }
+            } 
+            else {
+                let bestScore = -Infinity; let bestMoves = [];
+                possibleMoves.forEach(move => {
+                    game.move(move);
+                    let score = evaluateBoard(game.board(), game.turn());
+                    game.undo();
+                    if (score > bestScore) { bestScore = score; bestMoves = [move]; } 
+                    else if (score === bestScore) { bestMoves.push(move); }
+                });
+                if (botElo === 1000 && Math.random() < 0.3) { selectedMove = possibleMoves[Math.floor(Math.random() * possibleMoves.length)]; } 
+                else { selectedMove = bestMoves[Math.floor(Math.random() * bestMoves.length)]; }
+            }
+            game.move(selectedMove); board.position(game.fen()); updateStatus();
+        }
+
+        function evaluateBoard(board, currentTurn) {
+            const pieceValues = { p: 10, n: 30, b: 30, r: 50, q: 90, k: 900 };
+            let totalEvaluation = 0;
+            for (let r = 0; r < 8; r++) {
+                for (let c = 0; c < 8; c++) {
+                    let piece = board[r][c];
+                    if (piece) {
+                        let value = pieceValues[piece.type];
+                        if (piece.color === game.turn()) { totalEvaluation += value; } else { totalEvaluation -= value; }
+                    }
+                }
+            }
+            return totalEvaluation;
+        }
+
+        function updateStatus() {
+            let status = '';
+            let moveColor = game.turn() === 'b' ? 'Black' : 'White';
+            if (game.in_checkmate()) { status = `🎉 Game over, ${moveColor} is in checkmate.`; } 
+            else if (game.in_draw()) { status = '🤝 Game over, drawn match.'; } 
+            else {
+                if (isBotGame) { status = game.turn() === playerColor ? "Your turn!" : "🤖 Bot is thinking..."; } 
+                else { status = `${moveColor} to move.`; }
+                if (game.in_check()) { status += ` (${moveColor} is in check!)`; }
+            }
+            document.getElementById('status').innerText = status;
+        }
+    </script>
+</body>
+</html>
